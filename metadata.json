@@ -1,0 +1,6 @@
+{
+  "name": "RoadWindow 360",
+  "description": "실제 도로를 내비게이션으로 주행하며 360도 거리뷰와 항공뷰로 전 세계를 탐험하는 가상 운전 게임",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

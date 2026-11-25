@@ -1,0 +1,59 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    font-family: 'Plus Jakarta Sans', 'Noto Sans KR', system-ui, -apple-system, sans-serif;
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #0A0D12;
+    color: #F4F6FA;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.font-mono-tabular {
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom subtle scrollbars for guide drawer */
+.cockpit-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.cockpit-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cockpit-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.22);
+  border-radius: 9999px;
+}
+
+.cockpit-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.4);
+}
+
+/* Radial peripheral optical motion blur for high-speed driving (keeps center road crisp) */
+.sv-radial-speed-blur {
+  -webkit-backdrop-filter: blur(2.6px) saturate(1.06);
+  backdrop-filter: blur(2.6px) saturate(1.06);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 48%, transparent 52%, rgba(0, 0, 0, 0.72) 86%, black 100%);
+  mask-image: radial-gradient(ellipse at 50% 48%, transparent 52%, rgba(0, 0, 0, 0.72) 86%, black 100%);
+}
+
