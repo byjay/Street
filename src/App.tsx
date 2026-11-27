@@ -938,7 +938,7 @@ const RoadWindowWorkspace: React.FC<{ billingRequired?: boolean }> = ({
 
           {/* Compact PiP Toggleable Aerial Minimap */}
           {showMinimapPip ? (
-            <div className="absolute right-3 top-20 md:bottom-40 md:top-auto md:right-4 z-20 w-40 h-28 sm:w-56 sm:h-36 rounded-2xl overflow-hidden border border-slate-700/90 shadow-2xl bg-[#0D131D]">
+            <div className="absolute right-2.5 top-[72px] md:bottom-40 md:top-auto md:right-4 z-20 w-36 h-24 sm:w-56 sm:h-36 rounded-2xl overflow-hidden border border-slate-700/90 shadow-2xl bg-[#0D131D]">
               <AerialMapViewer
                 routeData={routeData}
                 rawRoute={rawRoute}
@@ -952,7 +952,7 @@ const RoadWindowWorkspace: React.FC<{ billingRequired?: boolean }> = ({
                   type="button"
                   onClick={() => setShowMinimapPip(false)}
                   aria-label="미니맵 접기"
-                  className="min-w-[30px] min-h-[30px] px-1.5 rounded-lg bg-[#0D131D]/90 border border-slate-700 text-[11px] text-slate-300 flex items-center justify-center hover:bg-slate-800 transition-colors"
+                  className="min-w-[28px] min-h-[28px] px-1.5 rounded-lg bg-[#0D131D]/90 border border-slate-700 text-[11px] text-slate-300 flex items-center justify-center hover:bg-slate-800 transition-colors"
                 >
                   <Minimize2 className="w-3 h-3" />
                 </button>
@@ -960,7 +960,7 @@ const RoadWindowWorkspace: React.FC<{ billingRequired?: boolean }> = ({
                   type="button"
                   onClick={() => setViewMode('aerial')}
                   aria-label="항공뷰 전체화면으로 전환"
-                  className="min-h-[30px] px-2 rounded-lg bg-[#0D131D]/90 border border-slate-700 text-[11px] font-semibold text-sky-300 flex items-center gap-1 hover:bg-slate-800 transition-colors"
+                  className="min-h-[28px] px-2 rounded-lg bg-[#0D131D]/90 border border-slate-700 text-[11px] font-semibold text-sky-300 flex items-center gap-1 hover:bg-slate-800 transition-colors"
                 >
                   <Maximize2 className="w-3 h-3" />
                   <span>항공뷰</span>
@@ -972,7 +972,7 @@ const RoadWindowWorkspace: React.FC<{ billingRequired?: boolean }> = ({
               type="button"
               onClick={() => setShowMinimapPip(true)}
               aria-label="경로 미니맵 열기"
-              className="absolute right-3 top-20 md:bottom-40 md:top-auto md:right-4 z-20 min-h-[38px] px-3 rounded-xl bg-[#0D131D]/92 border border-slate-700/80 hover:border-sky-400/70 text-xs font-semibold text-sky-300 flex items-center gap-1.5 shadow-xl transition-colors"
+              className="hidden md:flex absolute bottom-40 right-4 z-20 min-h-[38px] px-3 rounded-xl bg-[#0D131D]/92 border border-slate-700/80 hover:border-sky-400/70 text-xs font-semibold text-sky-300 items-center gap-1.5 shadow-xl transition-colors"
             >
               <MapIcon className="w-3.5 h-3.5" />
               <span>미니맵</span>
@@ -993,7 +993,7 @@ const RoadWindowWorkspace: React.FC<{ billingRequired?: boolean }> = ({
           />
 
           {/* Compact PiP Street View Window */}
-          <div className="absolute right-3 top-20 md:bottom-40 md:top-auto md:right-4 z-20 w-36 h-28 sm:w-52 sm:h-36 rounded-2xl overflow-hidden border border-slate-700/90 shadow-2xl bg-[#0D131D]">
+          <div className="absolute right-2.5 top-[72px] md:bottom-40 md:top-auto md:right-4 z-20 w-32 h-24 sm:w-52 sm:h-36 rounded-2xl overflow-hidden border border-slate-700/90 shadow-2xl bg-[#0D131D]">
             <StreetViewViewer
               targetPosition={sampledPose.position}
               targetHeading={sampledPose.heading}
@@ -1008,7 +1008,7 @@ const RoadWindowWorkspace: React.FC<{ billingRequired?: boolean }> = ({
               type="button"
               onClick={() => setViewMode('streetview')}
               aria-label="360° 거리뷰 전체화면으로 전환"
-              className="absolute bottom-1.5 right-1.5 min-w-[32px] min-h-[32px] px-2 rounded-lg bg-[#0D131D]/90 border border-slate-700 text-[11px] font-semibold text-amber-300 flex items-center gap-1 hover:bg-slate-800 transition-colors"
+              className="absolute bottom-1.5 right-1.5 min-w-[28px] min-h-[28px] px-2 rounded-lg bg-[#0D131D]/90 border border-slate-700 text-[11px] font-semibold text-amber-300 flex items-center gap-1 hover:bg-slate-800 transition-colors"
             >
               <Maximize2 className="w-3 h-3" />
               <span>360° 뷰</span>
@@ -1055,6 +1055,10 @@ const RoadWindowWorkspace: React.FC<{ billingRequired?: boolean }> = ({
           onPause={() => setGameState('paused')}
           isMuted={isMuted}
           onToggleMute={() => setIsMuted(driveAudio.toggleMute())}
+          autoAlignHeading={autoAlignHeading}
+          onToggleAutoAlign={() => setAutoAlignHeading((prev) => !prev)}
+          showMinimapPip={showMinimapPip}
+          onToggleMinimap={() => setShowMinimapPip((prev) => !prev)}
         />
       )}
 

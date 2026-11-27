@@ -866,12 +866,16 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
         />
       )}
 
-      {/* Top-left Taxi Window Context Strip (only in main view) */}
+      {/* Top-left Taxi Window Context Strip (desktop full strip; mobile shows only road name when present) */}
       {isMainView && (
-        <div className="pointer-events-none absolute top-24 left-3 md:left-4 z-30 flex items-center gap-2">
-          <div className="pointer-events-auto flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#0B1018]/88 border border-slate-700/70 text-xs text-slate-200 shadow-lg">
+        <div className="pointer-events-none absolute top-[72px] md:top-24 left-2.5 md:left-4 z-30 flex items-center gap-2">
+          <div
+            className={`pointer-events-auto items-center gap-2 px-2.5 md:px-3 py-1 md:py-1.5 rounded-lg bg-[#0B1018]/85 border border-slate-700/70 text-[11px] md:text-xs text-slate-200 shadow-lg ${
+              panoAddress ? 'flex' : 'hidden md:flex'
+            }`}
+          >
             <Eye className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-            <span className="truncate max-w-[175px] md:max-w-[280px]">
+            <span className="truncate max-w-[160px] md:max-w-[280px]">
               {panoAddress || '360° 창밖 시점 (드래그 회전)'}
             </span>
           </div>
@@ -895,7 +899,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
             aria-label={
               autoAlignHeading ? '진행방향 자동정렬 켜짐' : '자유 시점 모드'
             }
-            className={`pointer-events-auto min-h-[34px] px-2.5 py-1 rounded-lg border text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+            className={`hidden md:flex pointer-events-auto min-h-[34px] px-2.5 py-1 rounded-lg border text-xs font-medium items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
               autoAlignHeading
                 ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
                 : 'bg-[#0B1018]/88 border-slate-700/70 text-slate-300 hover:text-white'
