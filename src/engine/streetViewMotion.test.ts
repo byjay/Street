@@ -5,9 +5,11 @@ import {
   computeCrossfadeDurationMs,
   computeDynamicCameraPose,
   computeOpticalZoomHandover,
+  computeRelativeHeadingOffset,
   computeSpeedAdaptiveDwellMs,
   computeTransitionMotionBlur,
   ENTRY_OPTICAL_ZOOM,
+  resolveTargetCameraHeading,
   selectNextConnectedLink,
 } from './streetViewMotion';
 
@@ -38,7 +40,7 @@ test('computeCrossfadeDurationMs tightens transition window at high speed', () =
   const fastFade = computeCrossfadeDurationMs(65);
 
   assert.ok(slowFade > fastFade);
-  assert.ok(fastFade >= 340 && slowFade <= 560);
+  assert.ok(fastFade >= 340 && slowFade <= 520);
 });
 
 test('selectNextConnectedLink picks closest forward link and skips recently visited panos', () => {
@@ -78,7 +80,16 @@ test('computeDynamicCameraPose damps heading and applies subtle suspension pitch
   assert.ok(pose.pitch < 2.0 && pose.pitch >= 0.8);
 });
 
-test('computeTransitionMotionBlur scales blur with speed during transitions and zeroes when stopped', () => {
+test('resolveTargetCameraHeading preserves forward, relative window offset, or free compass view', () => {
+  const offset = computeRelativeHeadingOffset(350, 35); // +45 deg right window
+  assert.equal(offset, 45);
+
+  assert.equal(resolveTargetCameraHeading('forward', 120, offset, 210), 120);
+  assert.equal(resolveTargetCameraHeading('relative', 120, offset, 210), 165);
+  assert.equal(resolveTargetCameraHeading('free', 120, offset, 210), 210);
+});
+
+test('computeTransitionMotionBlur keeps incoming sharp (0px) and applies subtle outgoing feathering', () => {
   const parked = computeTransitionMotionBlur(0, true, false);
   assert.equal(parked.outgoingBlurPx, 0);
   assert.equal(parked.peripheralOpacity, 0);
@@ -86,12 +97,13 @@ test('computeTransitionMotionBlur scales blur with speed during transitions and 
   const slowTrans = computeTransitionMotionBlur(18, true, true);
   const fastTrans = computeTransitionMotionBlur(65, true, true);
   assert.ok(fastTrans.outgoingBlurPx > slowTrans.outgoingBlurPx);
-  assert.ok(fastTrans.incomingBlurPx > 0);
-  assert.ok(fastTrans.peripheralOpacity > 0.5);
+  assert.ok(fastTrans.outgoingBlurPx <= 1.5, 'Avoid heavy blur smearing');
+  assert.equal(fastTrans.incomingBlurPx, 0, 'Incoming frame stays sharp');
+  assert.ok(fastTrans.peripheralOpacity > 0.3 && fastTrans.peripheralOpacity <= 0.55);
 
   const settledFast = computeTransitionMotionBlur(65, false, true);
   assert.equal(settledFast.outgoingBlurPx, 0);
-  assert.ok(settledFast.peripheralOpacity > 0.5);
+  assert.ok(settledFast.peripheralOpacity > 0.3);
 });
 
 test('computeCameraShakeOffset vibrates subtly with speed/transition pulse and stabilizes when stopped or dragging', () => {

@@ -1,4 +1,5 @@
 import { normalizeAngleDelta } from './routeSimulation';
+import type { CameraFollowMode } from '../types/drive';
 
 export interface StreetViewLinkCandidate {
   pano?: string | null;
@@ -16,6 +17,7 @@ export interface DynamicCameraPoseInput {
   currentHeading: number;
   targetHeading: number;
   currentPitch: number;
+  targetPitch?: number;
   speedKmh: number;
   prevSpeedKmh: number;
   cornerAngleDeg: number;
@@ -28,6 +30,45 @@ export interface DynamicCameraPose {
 }
 
 export const ENTRY_OPTICAL_ZOOM = 0.08;
+
+/**
+ * Normalizes any compass angle into [0, 360).
+ */
+export function normalizeCompassHeading(deg: number): number {
+  if (!Number.isFinite(deg)) return 0;
+  return ((deg % 360) + 360) % 360;
+}
+
+/**
+ * Computes signed relative viewing offset from the road's travel direction in [-180, 180].
+ */
+export function computeRelativeHeadingOffset(
+  roadHeadingDeg: number,
+  viewerHeadingDeg: number
+): number {
+  return Number(normalizeAngleDelta(roadHeadingDeg, viewerHeadingDeg).toFixed(2));
+}
+
+/**
+ * Resolves the target Street View heading based on camera follow mode:
+ * - 'forward': aligned to travel direction
+ * - 'relative': preserves the user's chosen angle relative to travel direction
+ * - 'free': preserves the exact compass direction the user is looking at
+ */
+export function resolveTargetCameraHeading(
+  mode: CameraFollowMode,
+  roadHeadingDeg: number,
+  userRelativeOffsetDeg: number,
+  userFreeHeadingDeg: number
+): number {
+  if (mode === 'free') {
+    return normalizeCompassHeading(userFreeHeadingDeg);
+  }
+  if (mode === 'relative') {
+    return normalizeCompassHeading(roadHeadingDeg + userRelativeOffsetDeg);
+  }
+  return normalizeCompassHeading(roadHeadingDeg);
+}
 
 /**
  * Computes continuous speed-adaptive panorama dwell interval (ms) based on real vehicle speed,
@@ -63,24 +104,23 @@ export function computeOpticalZoomHandover(
   isCornering = false
 ): number {
   const t = Math.max(0, Math.min(1, Number.isFinite(progress01) ? progress01 : 0));
-  // Smooth forward-accelerating curve so motion feels natural right into the cut
-  const eased = 0.35 * t + 0.65 * t * t;
+  const eased = 0.42 * t + 0.58 * t * t;
 
   const speedNorm = Math.max(0, Math.min(1, (speedKmh - 10) / 55));
-  const rawSpan = 0.24 + speedNorm * 0.22; // +0.24 at slow speeds up to +0.46 at fast speeds
-  const cornerDampedSpan = isCornering ? rawSpan * 0.76 : rawSpan;
+  const rawSpan = 0.20 + speedNorm * 0.18; // +0.20 slow up to +0.38 fast (matches scale 1.055 dissolve)
+  const cornerDampedSpan = isCornering ? rawSpan * 0.78 : rawSpan;
 
   const zoom = ENTRY_OPTICAL_ZOOM + eased * cornerDampedSpan;
-  return Number(Math.max(ENTRY_OPTICAL_ZOOM, Math.min(0.58, zoom)).toFixed(3));
+  return Number(Math.max(ENTRY_OPTICAL_ZOOM, Math.min(0.48, zoom)).toFixed(3));
 }
 
 /**
- * Computes optimal crossfade duration (ms): faster speeds use tighter dissolves to prevent ghosting.
+ * Computes optimal crossfade duration (ms): silky dissolve without ghosting.
  */
 export function computeCrossfadeDurationMs(speedKmh: number): number {
   const safeSpeed = Math.max(0, Number.isFinite(speedKmh) ? speedKmh : 24);
   const t = Math.max(0, Math.min(1, (safeSpeed - 8) / 52));
-  return Math.round(560 - t * 220); // 560ms slow -> 340ms fast
+  return Math.round(520 - t * 180); // 520ms slow -> 340ms fast
 }
 
 /**
@@ -128,21 +168,23 @@ export function computeDynamicCameraPose(
   const headingDelta = normalizeAngleDelta(input.currentHeading, input.targetHeading);
 
   // Follow sharper corners briskly while keeping straight road tracking silky
-  const headingRate = input.cornerAngleDeg >= 24 ? 6.8 : 4.2;
+  const headingRate = input.cornerAngleDeg >= 24 ? 7.2 : 4.8;
   const headingAlpha = 1 - Math.exp(-headingRate * dt);
-  const nextHeading =
-    ((input.currentHeading + headingDelta * headingAlpha) % 360 + 360) % 360;
+  const nextHeading = normalizeCompassHeading(
+    input.currentHeading + headingDelta * headingAlpha
+  );
 
+  const basePitch = input.targetPitch ?? 2.0;
   const accelKmhPerSec = (input.speedKmh - input.prevSpeedKmh) / dt;
-  const pitchOffset = Math.max(-1.2, Math.min(1.4, accelKmhPerSec * 0.04));
-  const targetPitch = 2.0 + pitchOffset;
+  const pitchOffset = Math.max(-1.0, Math.min(1.2, accelKmhPerSec * 0.035));
+  const targetPitch = basePitch + pitchOffset;
   const pitchAlpha = 1 - Math.exp(-5.5 * dt);
   const nextPitch =
     input.currentPitch + (targetPitch - input.currentPitch) * pitchAlpha;
 
   return {
     heading: Number(nextHeading.toFixed(2)),
-    pitch: Number(Math.max(-4, Math.min(8, nextPitch)).toFixed(2)),
+    pitch: Number(Math.max(-25, Math.min(30, nextPitch)).toFixed(2)),
   };
 }
 
@@ -153,8 +195,8 @@ export interface MotionBlurProfile {
 }
 
 /**
- * Computes CSS filter blur levels (px) for Street View scene transitions and peripheral
- * high-speed rushing without blurring the settled center viewport.
+ * Computes light CSS filter blur levels (px) so transitions feel smooth without smearing tiles.
+ * Incoming frame always remains 0px blur for razor-sharp forward clarity.
  */
 export function computeTransitionMotionBlur(
   speedKmh: number,
@@ -165,9 +207,9 @@ export function computeTransitionMotionBlur(
     return { outgoingBlurPx: 0, incomingBlurPx: 0, peripheralOpacity: 0 };
   }
 
-  const speedRatio = Math.max(0, Math.min(1, (speedKmh - 8) / 62));
+  const speedRatio = Math.max(0, Math.min(1, (speedKmh - 12) / 58));
   const peripheralOpacity =
-    speedKmh >= 30 ? Number((0.25 + speedRatio * 0.65).toFixed(2)) : 0;
+    speedKmh >= 42 ? Number((0.15 + speedRatio * 0.35).toFixed(2)) : 0;
 
   if (!isTransitioning) {
     return {
@@ -177,12 +219,10 @@ export function computeTransitionMotionBlur(
     };
   }
 
-  const outgoingBlurPx = Number((1.6 + speedRatio * 3.2).toFixed(1)); // 1.6px .. 4.8px
-  const incomingBlurPx = Number((0.6 + speedRatio * 1.2).toFixed(1)); // 0.6px .. 1.8px
-
+  const outgoingBlurPx = Number((0.4 + speedRatio * 0.9).toFixed(1)); // 0.4px .. 1.3px feathering only
   return {
     outgoingBlurPx,
-    incomingBlurPx,
+    incomingBlurPx: 0,
     peripheralOpacity,
   };
 }

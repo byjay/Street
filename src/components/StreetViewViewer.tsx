@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useMapsLibrary } from '@vis.gl/react-google-maps';
-import { Compass, Eye, Navigation } from 'lucide-react';
+import { Compass, Eye, Lock, Navigation } from 'lucide-react';
 import {
   haversineMeters,
   normalizeAngleDelta,
@@ -11,18 +11,21 @@ import {
   computeCrossfadeDurationMs,
   computeDynamicCameraPose,
   computeOpticalZoomHandover,
+  computeRelativeHeadingOffset,
   computeSpeedAdaptiveDwellMs,
   computeTransitionMotionBlur,
   ENTRY_OPTICAL_ZOOM,
+  resolveTargetCameraHeading,
   selectNextConnectedLink,
 } from '../engine/streetViewMotion';
+import type { CameraFollowMode } from '../types/drive';
 import { checkQuotaError, toLatLngLiteral } from '../utils/mapsHelpers';
 
 interface StreetViewViewerProps {
   targetPosition: LatLngPoint;
   targetHeading: number;
-  autoAlignHeading: boolean;
-  onToggleAutoAlign: () => void;
+  cameraFollowMode: CameraFollowMode;
+  onChangeCameraMode: (mode: CameraFollowMode) => void;
   onSwitchToAerial: () => void;
   onPovChange?: (pov: { heading: number; pitch: number }) => void;
   isMainView: boolean;
@@ -44,13 +47,19 @@ interface StagedStandbyPano {
 }
 
 const MIN_STEP_DISTANCE_M = 8;
-const PRELOAD_TIMEOUT_MS = 750;
+const PRELOAD_TIMEOUT_MS = 850;
+
+const CAMERA_MODE_LABEL: Record<CameraFollowMode, string> = {
+  forward: '진행방향',
+  relative: '창밖시선 유지',
+  free: '현재뷰 고정',
+};
 
 export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
   targetPosition,
   targetHeading,
-  autoAlignHeading,
-  onToggleAutoAlign,
+  cameraFollowMode,
+  onChangeCameraMode,
   onSwitchToAerial,
   onPovChange,
   isMainView,
@@ -68,7 +77,6 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
     isCornering
   );
   const crossfadeMs = computeCrossfadeDurationMs(speedKmh);
-  const useFastDissolve = crossfadeMs <= 420;
 
   const streetViewLib = useMapsLibrary('streetView');
 
@@ -85,7 +93,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
   const activeLayerRef = useRef<0 | 1>(0);
   const [outgoingLayer, setOutgoingLayer] = useState<0 | 1 | null>(null);
   const outgoingLayerRef = useRef<0 | 1 | null>(null);
-  const [incomingBlurSweep, setIncomingBlurSweep] = useState<boolean>(false);
+  const [outgoingFading, setOutgoingFading] = useState<boolean>(false);
 
   const lastQueriedPosRef = useRef<LatLngPoint | null>(null);
   const lastPanoSwitchTimeRef = useRef<number>(0);
@@ -93,28 +101,37 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
   const lastStepNonceRef = useRef<number>(stepNonce);
   const recentPanoRingRef = useRef<string[]>([]);
   const lastPanoIdRef = useRef<string | null>(null);
+
   const currentHeadingRef = useRef<number>(targetHeading);
   const currentPitchRef = useRef<number>(2);
+  const userRelativeOffsetRef = useRef<number>(0);
+  const userFreeHeadingRef = useRef<number>(targetHeading);
+  const userPitchRef = useRef<number>(2);
   const lastAppliedZoomRef = useRef<number>(ENTRY_OPTICAL_ZOOM);
   const prevSpeedKmhRef = useRef<number>(speedKmh);
 
   const pendingQueryRef = useRef<boolean>(false);
   const userDraggingRef = useRef<boolean>(false);
-  const lastDragEndRef = useRef<number>(0);
+  const programmaticPovAtRef = useRef<number>(0);
+  const lastProgrammaticPovRef = useRef<{ heading: number; pitch: number }>({
+    heading: targetHeading,
+    pitch: 2,
+  });
 
   const swapTimerRef = useRef<number | null>(null);
+  const fadeStartRafRef = useRef<number | null>(null);
   const fadeResetTimerRef = useRef<number | null>(null);
-  const blurSweepTimerRef = useRef<number | null>(null);
   const tilesListenerRef = useRef<google.maps.MapsEventListener | null>(null);
   const stageTilesListenerRef = useRef<google.maps.MapsEventListener | null>(null);
   const stagedStandbyRef = useRef<StagedStandbyPano | null>(null);
   const stagingInFlightRef = useRef<boolean>(false);
   const onPovChangeRef = useRef(onPovChange);
+  const onChangeCameraModeRef = useRef(onChangeCameraMode);
+  const prevCameraModeRef = useRef<CameraFollowMode>(cameraFollowMode);
 
-  // Live motion refs for 30Hz optical-zoom & damping rAF loop without tearing down effects
   const liveMotionRef = useRef({
     targetHeading,
-    autoAlignHeading,
+    cameraFollowMode,
     isMoving,
     speedKmh,
     isCornering,
@@ -127,7 +144,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
   useEffect(() => {
     liveMotionRef.current = {
       targetHeading,
-      autoAlignHeading,
+      cameraFollowMode,
       isMoving,
       speedKmh,
       isCornering,
@@ -138,7 +155,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
     };
   }, [
     targetHeading,
-    autoAlignHeading,
+    cameraFollowMode,
     isMoving,
     speedKmh,
     isCornering,
@@ -152,10 +169,65 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
     'loading' | 'ready' | 'unavailable'
   >('loading');
   const [panoAddress, setPanoAddress] = useState<string>('');
+  const [hudHeadingDeg, setHudHeadingDeg] = useState<number>(Math.round(targetHeading));
 
   useEffect(() => {
     onPovChangeRef.current = onPovChange;
   }, [onPovChange]);
+
+  useEffect(() => {
+    onChangeCameraModeRef.current = onChangeCameraMode;
+  }, [onChangeCameraMode]);
+
+  const applyProgrammaticPov = (
+    pano: google.maps.StreetViewPanorama,
+    heading: number,
+    pitch: number
+  ) => {
+    programmaticPovAtRef.current = performance.now();
+    lastProgrammaticPovRef.current = { heading, pitch };
+    pano.setPov({ heading, pitch });
+  };
+
+  const getDesiredPoseForCurrentState = (roadHeading: number) => {
+    const mode = liveMotionRef.current.cameraFollowMode;
+    const heading = resolveTargetCameraHeading(
+      mode,
+      roadHeading,
+      userRelativeOffsetRef.current,
+      userFreeHeadingRef.current
+    );
+    const pitch = mode === 'forward' ? 2 : userPitchRef.current;
+    return { heading, pitch };
+  };
+
+  // Sync mode transitions triggered from UI controls
+  useEffect(() => {
+    const prevMode = prevCameraModeRef.current;
+    prevCameraModeRef.current = cameraFollowMode;
+    if (prevMode === cameraFollowMode) return;
+
+    const activePano = panoramasRef.current[activeLayerRef.current];
+    if (cameraFollowMode === 'forward') {
+      userRelativeOffsetRef.current = 0;
+      userPitchRef.current = 2;
+      currentHeadingRef.current = targetHeading;
+      currentPitchRef.current = 2;
+      if (activePano) {
+        applyProgrammaticPov(activePano, targetHeading, 2);
+      }
+      setHudHeadingDeg(Math.round(targetHeading));
+    } else if (cameraFollowMode === 'relative') {
+      userRelativeOffsetRef.current = computeRelativeHeadingOffset(
+        targetHeading,
+        currentHeadingRef.current
+      );
+      userPitchRef.current = currentPitchRef.current;
+    } else if (cameraFollowMode === 'free') {
+      userFreeHeadingRef.current = currentHeadingRef.current;
+      userPitchRef.current = currentPitchRef.current;
+    }
+  }, [cameraFollowMode, targetHeading]);
 
   const pushRecentPano = (panoId: string) => {
     lastPanoIdRef.current = panoId;
@@ -190,7 +262,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
     const beginStandbyPreload = (
       panoId: string,
       description: string,
-      heading: number
+      roadHeading: number
     ) => {
       if (!panoId || panoId === lastPanoIdRef.current) return;
       stageTilesListenerRef.current?.remove();
@@ -201,20 +273,13 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
         description,
         ready: false,
         startedAt: performance.now(),
-        targetHeading: heading,
+        targetHeading: roadHeading,
       };
 
-      const recentlyDragged = Date.now() - lastDragEndRef.current < 8000;
-      const desiredHeading =
-        motion.autoAlignHeading && !userDraggingRef.current && !recentlyDragged
-          ? heading
-          : currentHeadingRef.current;
-
+      const desired = getDesiredPoseForCurrentState(roadHeading);
       standbyPano.setZoom(ENTRY_OPTICAL_ZOOM);
-      standbyPano.setPov({
-        heading: desiredHeading,
-        pitch: currentPitchRef.current,
-      });
+      standbyPano.setPano(panoId);
+      applyProgrammaticPov(standbyPano, desired.heading, desired.pitch);
 
       stageTilesListenerRef.current = standbyPano.addListener(
         'tilesloaded',
@@ -226,7 +291,6 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
           stageTilesListenerRef.current = null;
         }
       );
-      standbyPano.setPano(panoId);
     };
 
     if (nextLink) {
@@ -305,6 +369,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
     outgoingLayerRef.current = null;
     setActiveLayer(0);
     setOutgoingLayer(null);
+    setOutgoingFading(false);
 
     const listeners: google.maps.MapsEventListener[] = [];
 
@@ -316,13 +381,39 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
         pano.addListener('pov_changed', () => {
           if (activeLayerRef.current !== layerIndex) return;
           const pov = pano.getPov();
-          if (userDraggingRef.current) {
+          const sinceProg = performance.now() - programmaticPovAtRef.current;
+          const diffFromProg =
+            Math.abs(
+              normalizeAngleDelta(lastProgrammaticPovRef.current.heading, pov.heading)
+            ) > 1.2 ||
+            Math.abs(lastProgrammaticPovRef.current.pitch - pov.pitch) > 1.2;
+
+          const isUserRotation =
+            userDraggingRef.current || (sinceProg > 170 && diffFromProg);
+
+          if (isUserRotation) {
             currentHeadingRef.current = pov.heading;
             currentPitchRef.current = pov.pitch;
+            userFreeHeadingRef.current = pov.heading;
+            userPitchRef.current = pov.pitch;
+            const relOffset = computeRelativeHeadingOffset(
+              liveMotionRef.current.targetHeading,
+              pov.heading
+            );
+            userRelativeOffsetRef.current = relOffset;
+            setHudHeadingDeg(Math.round(((pov.heading % 360) + 360) % 360));
+
+            if (
+              liveMotionRef.current.cameraFollowMode === 'forward' &&
+              (Math.abs(relOffset) >= 7 || Math.abs(pov.pitch - 2) >= 5)
+            ) {
+              onChangeCameraModeRef.current('relative');
+            }
           }
           onPovChangeRef.current?.({ heading: pov.heading, pitch: pov.pitch });
         })
       );
+
       listeners.push(
         pano.addListener('pano_changed', () => {
           if (activeLayerRef.current !== layerIndex) return;
@@ -330,11 +421,22 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
           if (panoId) {
             pushRecentPano(panoId);
             setCoverageStatus('ready');
-            // Pre-stage N+1 panorama immediately after active pano resolves
-            window.setTimeout(() => stageNextStandbyRef.current(), 80);
+
+            // Re-enforce target camera view immediately after pano_changed so Google's default link POV never overrides it
+            if (!userDraggingRef.current) {
+              const desired = getDesiredPoseForCurrentState(
+                liveMotionRef.current.targetHeading
+              );
+              applyProgrammaticPov(pano, desired.heading, desired.pitch);
+              currentHeadingRef.current = desired.heading;
+              currentPitchRef.current = desired.pitch;
+            }
+
+            window.setTimeout(() => stageNextStandbyRef.current(), 70);
           }
         })
       );
+
       listeners.push(
         pano.addListener('links_changed', () => {
           if (activeLayerRef.current !== layerIndex) return;
@@ -353,13 +455,13 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
         window.clearTimeout(swapTimerRef.current);
         swapTimerRef.current = null;
       }
+      if (fadeStartRafRef.current !== null) {
+        window.cancelAnimationFrame(fadeStartRafRef.current);
+        fadeStartRafRef.current = null;
+      }
       if (fadeResetTimerRef.current !== null) {
         window.clearTimeout(fadeResetTimerRef.current);
         fadeResetTimerRef.current = null;
-      }
-      if (blurSweepTimerRef.current !== null) {
-        window.clearTimeout(blurSweepTimerRef.current);
-        blurSweepTimerRef.current = null;
       }
       tilesListenerRef.current?.remove();
       tilesListenerRef.current = null;
@@ -438,12 +540,21 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
             activePano.setZoom(nextZoom);
           }
 
-          const recentlyDragged = Date.now() - lastDragEndRef.current < 8000;
-          if (motion.autoAlignHeading && !recentlyDragged) {
+          if (motion.cameraFollowMode === 'forward' || motion.cameraFollowMode === 'relative') {
+            const desiredHeading = resolveTargetCameraHeading(
+              motion.cameraFollowMode,
+              motion.targetHeading,
+              userRelativeOffsetRef.current,
+              userFreeHeadingRef.current
+            );
+            const desiredPitch =
+              motion.cameraFollowMode === 'forward' ? 2.0 : userPitchRef.current;
+
             const pose = computeDynamicCameraPose({
               currentHeading: currentHeadingRef.current,
-              targetHeading: motion.targetHeading,
+              targetHeading: desiredHeading,
               currentPitch: currentPitchRef.current,
+              targetPitch: desiredPitch,
               speedKmh: motion.speedKmh,
               prevSpeedKmh: prevSpeedKmhRef.current,
               cornerAngleDeg: motion.cornerAngleDeg,
@@ -452,16 +563,16 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
             prevSpeedKmhRef.current = motion.speedKmh;
 
             if (
-              Math.abs(normalizeAngleDelta(currentHeadingRef.current, pose.heading)) >= 0.15 ||
+              Math.abs(normalizeAngleDelta(currentHeadingRef.current, pose.heading)) >= 0.14 ||
               Math.abs(currentPitchRef.current - pose.pitch) >= 0.08
             ) {
               currentHeadingRef.current = pose.heading;
               currentPitchRef.current = pose.pitch;
-              activePano.setPov({
-                heading: pose.heading,
-                pitch: pose.pitch,
-              });
+              applyProgrammaticPov(activePano, pose.heading, pose.pitch);
             }
+          } else {
+            // 'free' mode: keep exact user compass heading & pitch without snapping
+            prevSpeedKmhRef.current = motion.speedKmh;
           }
         }
       }
@@ -522,40 +633,54 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
         window.clearTimeout(swapTimerRef.current);
         swapTimerRef.current = null;
       }
+      if (fadeStartRafRef.current !== null) {
+        window.cancelAnimationFrame(fadeStartRafRef.current);
+        fadeStartRafRef.current = null;
+      }
 
       pushRecentPano(panoId);
       lastPanoSwitchTimeRef.current = Date.now();
       lastAppliedZoomRef.current = ENTRY_OPTICAL_ZOOM;
       currentHeadingRef.current = desiredHeading;
       currentPitchRef.current = desiredPitch;
+      setHudHeadingDeg(Math.round(desiredHeading));
       if (description !== undefined) {
         setPanoAddress(description);
+      }
+
+      // Guarantee incoming standby buffer sits exactly on desiredHeading before revealing it
+      if (standbyPano) {
+        standbyPano.setZoom(ENTRY_OPTICAL_ZOOM);
+        applyProgrammaticPov(standbyPano, desiredHeading, desiredPitch);
       }
 
       const previousActive = activeLayerRef.current;
       activeLayerRef.current = standbyIdx;
       outgoingLayerRef.current = previousActive;
       stagedStandbyRef.current = null;
+
+      // Start outgoing layer at opacity 100 / scale 1 on top (z-20) over crisp active layer (z-10)
+      setOutgoingFading(false);
       setOutgoingLayer(previousActive);
       setActiveLayer(standbyIdx);
-      setIncomingBlurSweep(true);
       pendingQueryRef.current = false;
 
-      if (blurSweepTimerRef.current !== null) {
-        window.clearTimeout(blurSweepTimerRef.current);
-      }
-      blurSweepTimerRef.current = window.setTimeout(() => {
-        setIncomingBlurSweep(false);
-        blurSweepTimerRef.current = null;
-      }, 95);
+      // Trigger smooth CSS dissolve on next painted frame
+      fadeStartRafRef.current = window.requestAnimationFrame(() => {
+        fadeStartRafRef.current = window.requestAnimationFrame(() => {
+          setOutgoingFading(true);
+          fadeStartRafRef.current = null;
+        });
+      });
 
-      const clearDelayMs = liveMotionRef.current.crossfadeMs + 70;
+      const clearDelayMs = liveMotionRef.current.crossfadeMs + 60;
       if (fadeResetTimerRef.current !== null) {
         window.clearTimeout(fadeResetTimerRef.current);
       }
       fadeResetTimerRef.current = window.setTimeout(() => {
         outgoingLayerRef.current = null;
         setOutgoingLayer(null);
+        setOutgoingFading(false);
         fadeResetTimerRef.current = null;
         // Immediately pre-warm N+1 panorama on the newly freed standby layer
         stageNextStandbyRef.current();
@@ -578,15 +703,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
         return;
       }
 
-      const recentlyDragged = Date.now() - lastDragEndRef.current < 8000;
-      const desiredHeading =
-        autoAlignHeading && !userDraggingRef.current && !recentlyDragged
-          ? targetHeading
-          : currentHeadingRef.current;
-      const desiredPitch =
-        autoAlignHeading && !userDraggingRef.current && !recentlyDragged
-          ? 2
-          : currentPitchRef.current;
+      const desired = getDesiredPoseForCurrentState(targetHeading);
 
       // Single-buffer path for PiP mini window or initial cold boot
       if (!standbyPano || !lastPanoIdRef.current) {
@@ -594,28 +711,21 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
         lastPanoSwitchTimeRef.current = Date.now();
         lastAppliedZoomRef.current = ENTRY_OPTICAL_ZOOM;
         activePano.setZoom(ENTRY_OPTICAL_ZOOM);
-        activePano.setPov({
-          heading: desiredHeading,
-          pitch: desiredPitch,
-        });
         activePano.setPano(panoId);
+        applyProgrammaticPov(activePano, desired.heading, desired.pitch);
         if (description !== undefined) {
           setPanoAddress(description);
         }
-        currentHeadingRef.current = desiredHeading;
-        currentPitchRef.current = desiredPitch;
+        currentHeadingRef.current = desired.heading;
+        currentPitchRef.current = desired.pitch;
+        setHudHeadingDeg(Math.round(desired.heading));
         pendingQueryRef.current = false;
         return;
       }
 
       // Fast path: standby buffer ALREADY preloaded tiles during the previous dwell!
       if (alreadyPreloaded) {
-        standbyPano.setZoom(ENTRY_OPTICAL_ZOOM);
-        standbyPano.setPov({
-          heading: desiredHeading,
-          pitch: desiredPitch,
-        });
-        commitSwapToStandby(panoId, description, desiredHeading, desiredPitch);
+        commitSwapToStandby(panoId, description, desired.heading, desired.pitch);
         return;
       }
 
@@ -634,18 +744,23 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
       const onReady = () => {
         if (committed) return;
         committed = true;
-        commitSwapToStandby(panoId, description, desiredHeading, desiredPitch);
+        const latestDesired = getDesiredPoseForCurrentState(
+          liveMotionRef.current.targetHeading
+        );
+        commitSwapToStandby(
+          panoId,
+          description,
+          latestDesired.heading,
+          latestDesired.pitch
+        );
       };
 
       standbyPano.setZoom(ENTRY_OPTICAL_ZOOM);
-      standbyPano.setPov({
-        heading: desiredHeading,
-        pitch: desiredPitch,
-      });
-      tilesListenerRef.current = standbyPano.addListener('tilesloaded', onReady);
       standbyPano.setPano(panoId);
+      applyProgrammaticPov(standbyPano, desired.heading, desired.pitch);
+      tilesListenerRef.current = standbyPano.addListener('tilesloaded', onReady);
 
-      const maxWaitMs = manualStepTriggered ? 260 : PRELOAD_TIMEOUT_MS;
+      const maxWaitMs = manualStepTriggered ? 280 : PRELOAD_TIMEOUT_MS;
       swapTimerRef.current = window.setTimeout(onReady, maxWaitMs);
     };
 
@@ -661,7 +776,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
       isMoving &&
       staged &&
       driftFromRoute <= 75 &&
-      (staged.ready || performance.now() - staged.startedAt >= 260)
+      (staged.ready || performance.now() - staged.startedAt >= 420)
     ) {
       transitionToPano(staged.panoId, staged.description, true);
       return;
@@ -763,7 +878,7 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
     streetViewLib,
     targetPosition,
     targetHeading,
-    autoAlignHeading,
+    cameraFollowMode,
     isMoving,
     stepNonce,
     dwellMs,
@@ -776,43 +891,57 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
   );
 
   const outgoingBlurClass =
-    motionBlur.outgoingBlurPx >= 3.8
-      ? 'blur-[4.5px] brightness-[1.04] contrast-[1.04]'
-      : motionBlur.outgoingBlurPx >= 2.4
-        ? 'blur-[3px] brightness-[1.03]'
-        : motionBlur.outgoingBlurPx >= 1.0
-          ? 'blur-[1.5px]'
-          : 'blur-none';
-
-  const incomingBlurClass =
-    incomingBlurSweep && motionBlur.incomingBlurPx >= 1.0
-      ? 'blur-[1.5px] scale-[1.015]'
-      : 'blur-none scale-100';
+    motionBlur.outgoingBlurPx >= 0.9
+      ? 'blur-[1px]'
+      : motionBlur.outgoingBlurPx >= 0.4
+        ? 'blur-[0.5px]'
+        : 'blur-none';
 
   const peripheralOpacityClass =
-    motionBlur.peripheralOpacity >= 0.7
-      ? 'opacity-85'
-      : motionBlur.peripheralOpacity >= 0.45
-        ? 'opacity-60'
-        : motionBlur.peripheralOpacity > 0
-          ? 'opacity-35'
-          : 'opacity-0';
+    motionBlur.peripheralOpacity >= 0.4
+      ? 'opacity-45'
+      : motionBlur.peripheralOpacity >= 0.2
+        ? 'opacity-25'
+        : 'opacity-0';
 
   const getLayerClassName = (layerIndex: 0 | 1) => {
     const isActive = activeLayer === layerIndex;
     const isOutgoing = outgoingLayer === layerIndex;
-    const fadeDurationClass = useFastDissolve ? 'duration-300' : 'duration-500';
 
-    if (isActive && outgoingLayer !== null) {
-      return `absolute inset-0 w-full h-full z-20 opacity-100 ${incomingBlurClass} transition-[opacity,transform,filter] ${fadeDurationClass} ease-out pointer-events-auto`;
+    if (isOutgoing) {
+      return `absolute inset-0 w-full h-full z-20 transition-[opacity,transform,filter] pointer-events-none ${
+        outgoingFading
+          ? `opacity-0 scale-[1.055] ${outgoingBlurClass}`
+          : 'opacity-100 scale-100 blur-none'
+      }`;
     }
     if (isActive) {
-      return `absolute inset-0 w-full h-full z-10 opacity-100 ${incomingBlurClass} transition-[opacity,transform,filter] ${fadeDurationClass} ease-out pointer-events-auto`;
+      return 'absolute inset-0 w-full h-full z-10 opacity-100 scale-100 blur-none pointer-events-auto';
     }
-    if (isOutgoing) {
-      return `absolute inset-0 w-full h-full z-10 opacity-100 scale-[1.055] ${outgoingBlurClass} transition-[transform,filter] ${fadeDurationClass} ease-out pointer-events-none`;
+    return 'absolute inset-0 w-full h-full z-0 opacity-0 scale-100 blur-none pointer-events-none';
+  };
+
+  const getLayerStyle = (layerIndex: 0 | 1): React.CSSProperties | undefined => {
+    if (outgoingLayer !== layerIndex) return undefined;
+    return {
+      transitionDuration: `${crossfadeMs}ms`,
+      transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+    };
+  };
+
+  const cycleNextCameraMode = () => {
+    if (cameraFollowMode === 'forward') {
+      userRelativeOffsetRef.current = computeRelativeHeadingOffset(
+        targetHeading,
+        currentHeadingRef.current
+      );
+      onChangeCameraMode('relative');
+    } else if (cameraFollowMode === 'relative') {
+      userFreeHeadingRef.current = currentHeadingRef.current;
+      onChangeCameraMode('free');
+    } else {
+      onChangeCameraMode('forward');
     }
-    return 'absolute inset-0 w-full h-full z-0 opacity-0 blur-none scale-100 transition-opacity duration-200 ease-out pointer-events-none';
   };
 
   return (
@@ -827,17 +956,17 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
       }}
       onPointerUp={() => {
         userDraggingRef.current = false;
-        lastDragEndRef.current = Date.now();
       }}
       onPointerCancel={() => {
         userDraggingRef.current = false;
-        lastDragEndRef.current = Date.now();
       }}
     >
       {/* Frame-synced Camera Shake viewport wrapper (does not shake HUD overlays) */}
       <div
         ref={viewportShakeRef}
         data-testid="street-view-viewport"
+        data-camera-mode={cameraFollowMode}
+        data-current-heading={hudHeadingDeg}
         data-motion-blur-active={outgoingLayer !== null && isMoving ? 'true' : 'false'}
         data-motion-blur-px={motionBlur.outgoingBlurPx}
         data-camera-shake-active={isMainView && isMoving && speedKmh >= 2 ? 'true' : 'false'}
@@ -846,71 +975,66 @@ export const StreetViewViewer: React.FC<StreetViewViewerProps> = ({
         <div
           ref={containerARef}
           data-testid="street-view-canvas"
-          className={`${getLayerClassName(0)} min-h-[200px] min-w-[200px]`}
+          className={`${getLayerClassName(0)} min-h-[160px] min-w-[200px]`}
+          style={getLayerStyle(0)}
         />
 
         {isMainView && (
           <div
             ref={containerBRef}
             aria-hidden="true"
-            className={`${getLayerClassName(1)} min-h-[200px] min-w-[200px]`}
+            className={`${getLayerClassName(1)} min-h-[160px] min-w-[200px]`}
+            style={getLayerStyle(1)}
           />
         )}
       </div>
 
-      {/* Radial peripheral CSS Motion Blur & subtle speed framing at cruising speeds */}
+      {/* Subtle peripheral speed framing at cruising speeds (keeps center razor sharp) */}
       {isMainView && (
         <div
           aria-hidden="true"
-          className={`pointer-events-none absolute inset-0 z-20 sv-radial-speed-blur shadow-[inset_0_0_95px_rgba(6,10,16,0.55)] transition-opacity duration-500 ${peripheralOpacityClass}`}
+          className={`pointer-events-none absolute inset-0 z-20 sv-radial-speed-blur shadow-[inset_0_0_80px_rgba(6,10,16,0.45)] transition-opacity duration-500 ${peripheralOpacityClass}`}
         />
       )}
 
-      {/* Top-left Taxi Window Context Strip (desktop full strip; mobile shows only road name when present) */}
+      {/* Top-left Context Strip (minimal road text on mobile, full camera-mode toggle on desktop) */}
       {isMainView && (
-        <div className="pointer-events-none absolute top-[72px] md:top-24 left-2.5 md:left-4 z-30 flex items-center gap-2">
+        <div className="pointer-events-none absolute top-[68px] md:top-24 left-2.5 md:left-4 z-30 flex items-center gap-2">
           <div
-            className={`pointer-events-auto items-center gap-2 px-2.5 md:px-3 py-1 md:py-1.5 rounded-lg bg-[#0B1018]/85 border border-slate-700/70 text-[11px] md:text-xs text-slate-200 shadow-lg ${
+            className={`pointer-events-auto items-center gap-2 px-2.5 md:px-3 py-1 md:py-1.5 rounded-lg bg-[#0B1018]/80 border border-slate-700/70 text-[11px] md:text-xs text-slate-200 shadow-lg ${
               panoAddress ? 'flex' : 'hidden md:flex'
             }`}
           >
-            <Eye className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-            <span className="truncate max-w-[160px] md:max-w-[280px]">
+            <Eye className="hidden md:block w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="truncate max-w-[165px] md:max-w-[280px]">
               {panoAddress || '360° 창밖 시점 (드래그 회전)'}
             </span>
           </div>
 
           <button
             type="button"
+            data-testid="camera-mode-btn"
             onClick={(e) => {
               e.currentTarget.blur();
-              const activePano = panoramasRef.current[activeLayerRef.current];
-              if (activePano) {
-                lastDragEndRef.current = 0;
-                currentHeadingRef.current = targetHeading;
-                currentPitchRef.current = 2;
-                activePano.setPov({
-                  heading: targetHeading,
-                  pitch: 2,
-                });
-              }
-              onToggleAutoAlign();
+              cycleNextCameraMode();
             }}
-            aria-label={
-              autoAlignHeading ? '진행방향 자동정렬 켜짐' : '자유 시점 모드'
-            }
+            aria-label={`시선 모드: ${CAMERA_MODE_LABEL[cameraFollowMode]}`}
             className={`hidden md:flex pointer-events-auto min-h-[34px] px-2.5 py-1 rounded-lg border text-xs font-medium items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
-              autoAlignHeading
+              cameraFollowMode === 'forward'
                 ? 'bg-amber-500/20 border-amber-400/60 text-amber-200'
-                : 'bg-[#0B1018]/88 border-slate-700/70 text-slate-300 hover:text-white'
+                : cameraFollowMode === 'relative'
+                  ? 'bg-emerald-500/20 border-emerald-400/60 text-emerald-200'
+                  : 'bg-[#0B1018]/88 border-slate-700/70 text-slate-200 hover:text-white'
             }`}
           >
-            {autoAlignHeading ? (
+            {cameraFollowMode === 'forward' ? (
               <Navigation className="w-3.5 h-3.5" />
-            ) : (
+            ) : cameraFollowMode === 'relative' ? (
               <Compass className="w-3.5 h-3.5" />
+            ) : (
+              <Lock className="w-3.5 h-3.5" />
             )}
-            <span>{autoAlignHeading ? '시선 자동정렬' : '360° 자유시점'}</span>
+            <span>{CAMERA_MODE_LABEL[cameraFollowMode]}</span>
           </button>
         </div>
       )}

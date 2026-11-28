@@ -1,5 +1,16 @@
 import React from 'react';
-import { BarChart3, Flag, Home, Play, RotateCcw, Sparkles } from 'lucide-react';
+import {
+  BarChart3,
+  Clock,
+  Flag,
+  Home,
+  Navigation,
+  Play,
+  RotateCcw,
+  Route,
+  Sparkles,
+  Trophy,
+} from 'lucide-react';
 import {
   formatDistanceKr,
   formatDurationKr,
@@ -17,6 +28,9 @@ interface StatusModalProps {
   onOpenDestinationGuide: () => void;
   onEndDrive: () => void;
   onOpenDashboard: () => void;
+  hasNextLeg?: boolean;
+  nextLegTitle?: string;
+  onAdvanceNextLeg?: () => void;
 }
 
 export const StatusModal: React.FC<StatusModalProps> = ({
@@ -29,6 +43,9 @@ export const StatusModal: React.FC<StatusModalProps> = ({
   onOpenDestinationGuide,
   onEndDrive,
   onOpenDashboard,
+  hasNextLeg = false,
+  nextLegTitle,
+  onAdvanceNextLeg,
 }) => {
   if (gameState !== 'paused' && gameState !== 'gameover') {
     return null;
@@ -41,7 +58,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label={isVictory ? '목적지 도착 완료' : '주행 일시정지'}
-      className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
     >
       <div className="w-full max-w-md rounded-2xl bg-[#101622] border border-slate-700 p-6 shadow-2xl space-y-5">
         <div className="flex items-center gap-3">
@@ -65,34 +82,56 @@ export const StatusModal: React.FC<StatusModalProps> = ({
             <p className="text-xs text-slate-400 truncate">
               {routeData
                 ? `${routeData.origin.name} → ${routeData.destination.name}`
-                : '경로 주행 중'}
+                : '여정 진행 중'}
             </p>
           </div>
         </div>
 
-        {/* 3 Tabular Stat Tiles */}
+        {/* 3 Iconified Stat Tiles */}
         <div className="grid grid-cols-3 gap-2.5">
-          <div className="rounded-xl bg-[#161D29] border border-slate-800 p-3 text-center">
-            <span className="block text-[11px] text-slate-400">주행 거리</span>
-            <span className="font-mono-tabular text-base font-bold text-slate-100 mt-0.5 block">
+          <div className="rounded-xl bg-[#161D29] border border-slate-800 p-3 text-center space-y-1">
+            <div className="flex items-center justify-center gap-1 text-[11px] text-slate-400">
+              <Route className="w-3 h-3 text-sky-400" />
+              <span>이동 거리</span>
+            </div>
+            <span className="font-mono-tabular text-base font-bold text-slate-100 block">
               {formatDistanceKr(physics.distanceMeters)}
             </span>
           </div>
-          <div className="rounded-xl bg-[#161D29] border border-slate-800 p-3 text-center">
-            <span className="block text-[11px] text-slate-400">소요 시간</span>
-            <span className="font-mono-tabular text-base font-bold text-slate-100 mt-0.5 block">
+          <div className="rounded-xl bg-[#161D29] border border-slate-800 p-3 text-center space-y-1">
+            <div className="flex items-center justify-center gap-1 text-[11px] text-slate-400">
+              <Clock className="w-3 h-3 text-emerald-400" />
+              <span>소요 시간</span>
+            </div>
+            <span className="font-mono-tabular text-base font-bold text-slate-100 block">
               {formatDurationKr(physics.elapsedSeconds)}
             </span>
           </div>
-          <div className="rounded-xl bg-[#161D29] border border-slate-800 p-3 text-center">
-            <span className="block text-[11px] text-slate-400">드라이브 점수</span>
-            <span className="font-mono-tabular text-base font-bold text-amber-400 mt-0.5 block">
+          <div className="rounded-xl bg-[#161D29] border border-slate-800 p-3 text-center space-y-1">
+            <div className="flex items-center justify-center gap-1 text-[11px] text-slate-400">
+              <Trophy className="w-3 h-3 text-amber-400" />
+              <span>점수</span>
+            </div>
+            <span className="font-mono-tabular text-base font-bold text-amber-400 block">
               {Math.round(physics.score)}
             </span>
           </div>
         </div>
 
         <div className="space-y-2.5">
+          {hasNextLeg && onAdvanceNextLeg && (
+            <button
+              type="button"
+              onClick={onAdvanceNextLeg}
+              className="w-full min-h-[46px] rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+            >
+              <Navigation className="w-4 h-4" />
+              <span>
+                {nextLegTitle ? `다음 여정: ${nextLegTitle}` : '다음 여정으로 이어가기'}
+              </span>
+            </button>
+          )}
+
           {!isVictory ? (
             <>
               <button
@@ -101,7 +140,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
                 className="w-full min-h-[46px] rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-colors"
               >
                 <Play className="w-4 h-4" />
-                <span>계속 주행하기</span>
+                <span>계속 진행하기</span>
               </button>
               <button
                 type="button"
@@ -109,7 +148,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
                 className="w-full min-h-[44px] rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/50 text-amber-200 font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
               >
                 <BarChart3 className="w-4 h-4" />
-                <span>주행 종료 및 기록 대시보드 보기</span>
+                <span>종료 및 주행 기록 대시보드 보기</span>
               </button>
             </>
           ) : (
@@ -128,7 +167,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
                 className="w-full min-h-[44px] rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-colors"
               >
                 <Sparkles className="w-4 h-4" />
-                <span>도착지 주변 명소·맛집 AI 가이드</span>
+                <span>도착지 주변 명소·맛집 가이드</span>
               </button>
             </>
           )}
@@ -141,7 +180,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
               className="min-h-[44px] rounded-xl bg-[#161D29] hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-100 flex items-center justify-center gap-1.5 transition-colors"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>처음부터 다시 주행</span>
+              <span>처음부터 다시</span>
             </button>
 
             <button
@@ -150,7 +189,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
               className="min-h-[44px] rounded-xl bg-[#161D29] hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-100 flex items-center justify-center gap-1.5 transition-colors"
             >
               <Home className="w-3.5 h-3.5" />
-              <span>새 목적지 설정</span>
+              <span>홈 / 새 경로</span>
             </button>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { useMapsLibrary } from '@vis.gl/react-google-maps';
 import { LocateFixed, MapPin, Search, X } from 'lucide-react';
-import type { SelectedPlaceInfo } from '../types/drive';
+import { isFreeProvider, type MapProviderMode, type SelectedPlaceInfo } from '../types/drive';
+import { searchFreePlaces } from '../utils/freeMapsHelpers';
 import { checkQuotaError, toLatLngLiteral } from '../utils/mapsHelpers';
 
 interface PlaceSearchInputProps {
@@ -9,10 +9,20 @@ interface PlaceSearchInputProps {
   placeholder: string;
   value: SelectedPlaceInfo | null;
   onSelect: (place: SelectedPlaceInfo) => void;
+  mapProvider: MapProviderMode;
+  placesLib?: google.maps.PlacesLibrary | null;
   showGpsButton?: boolean;
   onUseCurrentLocation?: () => void;
   gpsLoading?: boolean;
   accentColor?: 'amber' | 'emerald';
+}
+
+interface PlaceSuggestionItem {
+  id: string;
+  mainText: string;
+  secondaryText: string;
+  freePlace?: SelectedPlaceInfo;
+  googleSuggestion?: google.maps.places.AutocompleteSuggestion;
 }
 
 export const PlaceSearchInput: React.FC<PlaceSearchInputProps> = ({
@@ -20,20 +30,19 @@ export const PlaceSearchInput: React.FC<PlaceSearchInputProps> = ({
   placeholder,
   value,
   onSelect,
+  mapProvider,
+  placesLib = null,
   showGpsButton = false,
   onUseCurrentLocation,
   gpsLoading = false,
   accentColor = 'emerald',
 }) => {
   const inputId = useId();
-  const placesLib = useMapsLibrary('places');
 
   const [query, setQuery] = useState(value?.name ?? '');
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [suggestions, setSuggestions] = useState<
-    google.maps.places.AutocompleteSuggestion[]
-  >([]);
+  const [suggestions, setSuggestions] = useState<PlaceSuggestionItem[]>([]);
 
   const sessionTokenRef =
     useRef<google.maps.places.AutocompleteSessionToken | null>(null);
@@ -45,6 +54,11 @@ export const PlaceSearchInput: React.FC<PlaceSearchInputProps> = ({
       setQuery(value?.name ?? '');
     }
   }, [value]);
+
+  useEffect(() => {
+    setSuggestions([]);
+    setIsOpen(false);
+  }, [mapProvider]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -61,7 +75,9 @@ export const PlaceSearchInput: React.FC<PlaceSearchInputProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!placesLib || !isTypingRef.current) return;
+    if (!isTypingRef.current) return;
+    if (mapProvider === 'google' && !placesLib) return;
+
     const trimmed = query.trim();
     if (trimmed.length < 1) {
       setSuggestions([]);
@@ -69,35 +85,85 @@ export const PlaceSearchInput: React.FC<PlaceSearchInputProps> = ({
       return;
     }
 
+    let cancelled = false;
     const timer = window.setTimeout(async () => {
       try {
+        setIsLoading(true);
+
+        if (isFreeProvider(mapProvider)) {
+          const found = await searchFreePlaces(trimmed, 'autocomplete', 5, mapProvider);
+          if (cancelled) return;
+          setSuggestions(
+            found.map((place, idx) => ({
+              id: place.placeId || `free-${idx}-${place.name}`,
+              mainText: place.name,
+              secondaryText: place.address || '',
+              freePlace: place,
+            }))
+          );
+          setIsOpen(true);
+          return;
+        }
+
+        if (!placesLib) return;
         const { AutocompleteSessionToken, AutocompleteSuggestion } = placesLib;
         if (!sessionTokenRef.current) {
           sessionTokenRef.current = new AutocompleteSessionToken();
         }
-        setIsLoading(true);
         const res = await AutocompleteSuggestion.fetchAutocompleteSuggestions({
           input: trimmed,
           sessionToken: sessionTokenRef.current,
         });
-        setSuggestions(res.suggestions ?? []);
+        if (cancelled) return;
+
+        const mapped: PlaceSuggestionItem[] = [];
+        for (let idx = 0; idx < (res.suggestions ?? []).length; idx += 1) {
+          const item = res.suggestions[idx];
+          const pred = item.placePrediction;
+          if (!pred) continue;
+          mapped.push({
+            id: pred.placeId || `google-${idx}`,
+            mainText: pred.mainText?.text || pred.text.text,
+            secondaryText: pred.secondaryText?.text || '',
+            googleSuggestion: item,
+          });
+        }
+        setSuggestions(mapped);
         setIsOpen(true);
       } catch (err) {
-        checkQuotaError(err);
-        setSuggestions([]);
+        if (mapProvider === 'google') {
+          checkQuotaError(err);
+        }
+        if (!cancelled) {
+          setSuggestions([]);
+        }
       } finally {
-        setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
-    }, 220);
+    }, 240);
 
-    return () => window.clearTimeout(timer);
-  }, [placesLib, query]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [mapProvider, placesLib, query]);
 
   const handleSelectSuggestion = useCallback(
-    async (suggestion: google.maps.places.AutocompleteSuggestion) => {
-      if (!placesLib || !suggestion.placePrediction) return;
+    async (item: PlaceSuggestionItem) => {
+      if (item.freePlace) {
+        isTypingRef.current = false;
+        setQuery(item.freePlace.name);
+        setSuggestions([]);
+        setIsOpen(false);
+        onSelect(item.freePlace);
+        return;
+      }
+
+      if (!placesLib || !item.googleSuggestion?.placePrediction) return;
       try {
-        const place = suggestion.placePrediction.toPlace();
+        const place = item.googleSuggestion.placePrediction.toPlace();
         await place.fetchFields({
           fields: ['id', 'displayName', 'formattedAddress', 'location'],
         });
@@ -107,7 +173,7 @@ export const PlaceSearchInput: React.FC<PlaceSearchInputProps> = ({
         const selected: SelectedPlaceInfo = {
           name:
             place.displayName ||
-            suggestion.placePrediction.text.text ||
+            item.googleSuggestion.placePrediction.text.text ||
             query,
           address: place.formattedAddress || undefined,
           location: coords,
@@ -217,30 +283,24 @@ export const PlaceSearchInput: React.FC<PlaceSearchInputProps> = ({
               장소를 검색하는 중...
             </li>
           )}
-          {suggestions.map((item, idx) => {
-            const pred = item.placePrediction;
-            if (!pred) return null;
-            const mainText = pred.mainText?.text || pred.text.text;
-            const secondaryText = pred.secondaryText?.text || '';
-            return (
-              <li key={pred.placeId || idx}>
-                <button
-                  type="button"
-                  onClick={() => void handleSelectSuggestion(item)}
-                  className="w-full text-left px-3.5 py-2.5 hover:bg-slate-800/70 focus:bg-slate-800/70 focus:outline-none transition-colors flex flex-col gap-0.5"
-                >
-                  <span className="text-sm font-medium text-slate-100 truncate">
-                    {mainText}
+          {suggestions.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                onClick={() => void handleSelectSuggestion(item)}
+                className="w-full text-left px-3.5 py-2.5 hover:bg-slate-800/70 focus:bg-slate-800/70 focus:outline-none transition-colors flex flex-col gap-0.5"
+              >
+                <span className="text-sm font-medium text-slate-100 truncate">
+                  {item.mainText}
+                </span>
+                {item.secondaryText && (
+                  <span className="text-xs text-slate-400 truncate">
+                    {item.secondaryText}
                   </span>
-                  {secondaryText && (
-                    <span className="text-xs text-slate-400 truncate">
-                      {secondaryText}
-                    </span>
-                  )}
-                </button>
-              </li>
-            );
-          })}
+                )}
+              </button>
+            </li>
+          ))}
         </ul>
       )}
     </div>

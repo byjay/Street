@@ -4,7 +4,78 @@ export type GameState = 'title' | 'playing' | 'paused' | 'gameover';
 
 export type CameraViewMode = 'streetview' | 'aerial' | 'split' | 'map';
 
+export type CameraFollowMode = 'forward' | 'relative' | 'free';
+
+export type MapProviderMode = 'free-kr' | 'free-global' | 'google';
+
+export function isFreeProvider(provider: MapProviderMode): boolean {
+  return provider !== 'google';
+}
+
 export type TravelModeOption = 'DRIVING' | 'WALKING';
+
+export type TransportMode = 'walk' | 'drive' | 'flight';
+
+export type FlightCameraMode = 'cockpit' | 'window-left' | 'window-right' | 'chase';
+
+export type FlightTimeOfDay = 'dawn' | 'day' | 'sunset' | 'night';
+
+export type FlightPhase = 'TAKEOFF' | 'CLIMB' | 'CRUISE' | 'DESCENT' | 'LANDING';
+
+export interface AppRuntimeConfig {
+  defaultProvider: MapProviderMode;
+  availableProviders: MapProviderMode[];
+  mapsApiKey: string;
+  kakaoMapKey: string;
+  mapillaryToken: string;
+  vworldApiKey: string;
+  hasGeminiGuide: boolean;
+}
+
+export interface FlightWaypoint {
+  lat: number;
+  lng: number;
+  altitudeMeters: number;
+  distanceFromStartMeters: number;
+  headingDeg: number;
+  pitchDeg: number;
+  rollDeg: number;
+  landmarkName?: string;
+}
+
+export interface FlightTelemetry {
+  progress: number; // 0..1
+  distanceMeters: number;
+  totalDistanceMeters: number;
+  altitudeMeters: number;
+  speedKmh: number;
+  headingDeg: number;
+  pitchDeg: number;
+  rollDeg: number;
+  remainingKm: number;
+  etaMinutes: number;
+  phase: FlightPhase;
+  nearestLandmark: string;
+  nearestLandmarkDescription: string;
+}
+
+export interface TripLeg {
+  id: string;
+  title: string;
+  transportMode: TransportMode;
+  originName: string;
+  destinationName: string;
+  origin: LatLngPoint;
+  destination: LatLngPoint;
+  autoTransitionToNext: boolean;
+}
+
+export interface SeamlessTransitionState {
+  phase: 'IDLE' | 'DIVING_TO_STREET' | 'ASCENDING_TO_EARTH';
+  label: string;
+  overlayOpacity: number;
+  targetCoord: { lat: number; lng: number; headingDeg: number } | null;
+}
 
 export interface SelectedPlaceInfo {
   name: string;
@@ -140,4 +211,3 @@ export interface DriveHistorySummary {
     avgSpeedKmh: number;
   }>;
 }
-

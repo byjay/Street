@@ -22,6 +22,7 @@ interface AerialMapViewerProps {
   mode: 'aerial' | 'map';
   interactive: boolean;
   disable3d?: boolean;
+  compactZoom?: boolean;
   onJumpToDistance?: (distanceMeters: number) => void;
 }
 
@@ -101,13 +102,13 @@ const Earth3DRouteLayer: React.FC<{
   useEffect(() => {
     if (!map3d) return;
     const now = performance.now();
-    if (now - lastCameraSyncRef.current < 85) return;
+    if (now - lastCameraSyncRef.current < 45) return;
     lastCameraSyncRef.current = now;
 
     let delta = ((vehicleHeading - smoothedHeadingRef.current) % 360 + 540) % 360 - 180;
     if (delta < -180) delta += 360;
     smoothedHeadingRef.current =
-      ((smoothedHeadingRef.current + delta * 0.35) % 360 + 360) % 360;
+      ((smoothedHeadingRef.current + delta * 0.28) % 360 + 360) % 360;
 
     map3d.center = {
       lat: vehiclePosition.lat,
@@ -194,10 +195,12 @@ const RouteOverlayLayer2D: React.FC<{
     };
   }, [map, rawRoute, routeData, mode]);
 
+  const smoothed2dHeadingRef = useRef<number>(vehicleHeading);
+
   useEffect(() => {
     if (!map) return;
     const now = performance.now();
-    if (now - lastPanTimeRef.current < 95) return;
+    if (now - lastPanTimeRef.current < 48) return;
     lastPanTimeRef.current = now;
 
     map.panTo(vehiclePosition);
@@ -206,7 +209,11 @@ const RouteOverlayLayer2D: React.FC<{
       map.getRenderingType?.() === google.maps.RenderingType.VECTOR;
     if (isVector) {
       if (mode === 'aerial') {
-        map.setHeading(vehicleHeading);
+        let delta = ((vehicleHeading - smoothed2dHeadingRef.current) % 360 + 540) % 360 - 180;
+        if (delta < -180) delta += 360;
+        smoothed2dHeadingRef.current =
+          ((smoothed2dHeadingRef.current + delta * 0.32) % 360 + 360) % 360;
+        map.setHeading(smoothed2dHeadingRef.current);
         map.setTilt(45);
       } else {
         map.setHeading(0);
@@ -256,6 +263,7 @@ export const AerialMapViewer: React.FC<AerialMapViewerProps> = ({
   mode,
   interactive,
   disable3d = false,
+  compactZoom = false,
   onJumpToDistance,
 }) => {
   const hasWebGL2 = useMemo(() => detectWebGL2(), []);
@@ -282,7 +290,7 @@ export const AerialMapViewer: React.FC<AerialMapViewerProps> = ({
               lng: vehiclePosition.lng,
               altitude: 12,
             }}
-            defaultRange={340}
+            defaultRange={compactZoom ? 280 : 340}
             defaultHeading={vehicleHeading}
             defaultTilt={60}
             onError={() => setMap3dFailed(true)}
@@ -332,7 +340,7 @@ export const AerialMapViewer: React.FC<AerialMapViewerProps> = ({
           mapId="DEMO_MAP_ID"
           internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
           defaultCenter={vehiclePosition}
-          defaultZoom={mode === 'aerial' ? 18 : 16}
+          defaultZoom={mode === 'aerial' ? (compactZoom ? 17 : 18) : 16}
           mapTypeId={mode === 'aerial' ? 'hybrid' : 'roadmap'}
           disableDefaultUI={true}
           gestureHandling={interactive ? 'greedy' : 'none'}

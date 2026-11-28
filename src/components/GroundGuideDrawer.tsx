@@ -1,19 +1,26 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useMapsLibrary } from '@vis.gl/react-google-maps';
 import {
   ExternalLink,
   MapPin,
   Navigation,
+  Plane,
   Search,
   Sparkles,
   X,
 } from 'lucide-react';
 import type { LatLngPoint } from '../engine/routeSimulation';
-import type {
-  GroundedPlaceLink,
-  GroundingGuideResponse,
-  SelectedPlaceInfo,
+import {
+  isFreeProvider,
+  type GroundedPlaceLink,
+  type GroundingGuideResponse,
+  type MapProviderMode,
+  type SelectedPlaceInfo,
 } from '../types/drive';
+import {
+  fetchFlightGuideBriefing,
+  fetchFreeNearbyGuide,
+  resolveFreePlaceByQuery,
+} from '../utils/freeMapsHelpers';
 import { checkQuotaError, resolvePlaceByQuery } from '../utils/mapsHelpers';
 
 interface GroundGuideDrawerProps {
@@ -22,7 +29,11 @@ interface GroundGuideDrawerProps {
   currentPosition: LatLngPoint;
   destination: SelectedPlaceInfo | null;
   onSetNewDestination: (place: SelectedPlaceInfo) => void;
-  initialMode?: 'nearby' | 'destination';
+  mapProvider: MapProviderMode;
+  placesLib?: google.maps.PlacesLibrary | null;
+  initialMode?: 'nearby' | 'destination' | 'flight';
+  flightLandmarkName?: string;
+  flightAltitudeMeters?: number;
 }
 
 export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
@@ -31,12 +42,15 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
   currentPosition,
   destination,
   onSetNewDestination,
+  mapProvider,
+  placesLib = null,
   initialMode = 'destination',
+  flightLandmarkName,
+  flightAltitudeMeters = 5200,
 }) => {
-  const placesLib = useMapsLibrary('places');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMode, setActiveMode] = useState<
-    'nearby' | 'destination' | 'search'
+    'nearby' | 'destination' | 'search' | 'flight'
   >(initialMode);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +59,7 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
   );
   const [navigatingTitle, setNavigatingTitle] = useState<string | null>(null);
   const fetchedThisOpenRef = useRef(false);
+  const isFree = isFreeProvider(mapProvider);
 
   const fetchPlacesFallback = useCallback(
     async (
@@ -141,7 +156,7 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
       return {
         summary:
           mappedPlaces.length > 0
-            ? `${titleLabel}의 실제 Google 지도 등록 장소 ${mappedPlaces.length}곳을 불러왔습니다. 원하는 장소를 눌러 바로 차로 이동하거나 지도에서 자세히 볼 수 있습니다.`
+            ? `${titleLabel}의 실제 Google 지도 등록 장소 ${mappedPlaces.length}곳을 불러왔습니다.`
             : `${titleLabel}에서 추천 장소를 찾지 못했습니다. 다른 검색어로 다시 시도해 주세요.`,
         places: mappedPlaces,
       };
@@ -150,15 +165,65 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
   );
 
   const fetchGuide = useCallback(
-    async (mode: 'nearby' | 'destination' | 'search', customQuery?: string) => {
+    async (
+      mode: 'nearby' | 'destination' | 'search' | 'flight',
+      customQuery?: string
+    ) => {
       setLoading(true);
       setError(null);
       setActiveMode(mode);
+
+      if (mode === 'flight') {
+        try {
+          const flightRes = await fetchFlightGuideBriefing({
+            landmarkName: flightLandmarkName || '한반도 상공',
+            altitudeMeters: flightAltitudeMeters,
+            lat: currentPosition.lat,
+            lng: currentPosition.lng,
+          });
+          setGuideData(flightRes);
+        } catch (err) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : '항공 브리핑을 불러오지 못했습니다.'
+          );
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
 
       const targetPos =
         mode === 'destination' && destination
           ? destination.location
           : currentPosition;
+
+      if (isFree) {
+        try {
+          const freeQuery =
+            mode === 'search'
+              ? customQuery
+              : mode === 'destination' && destination
+                ? `${destination.name} 주변`
+                : undefined;
+          const freeResult = await fetchFreeNearbyGuide(
+            targetPos.lat,
+            targetPos.lng,
+            freeQuery
+          );
+          setGuideData(freeResult);
+        } catch (err) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : '오픈소스 주변 장소 정보를 불러오지 못했습니다.'
+          );
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
 
       try {
         const res = await fetch('/api/grounding/guide', {
@@ -193,7 +258,6 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
           return;
         }
 
-        // Seamless fallback to Google Places API (New) when Gemini server endpoint returns HTML/503
         const fallbackData = await fetchPlacesFallback(
           mode,
           targetPos,
@@ -220,7 +284,14 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
         setLoading(false);
       }
     },
-    [currentPosition, destination, fetchPlacesFallback]
+    [
+      currentPosition,
+      destination,
+      fetchPlacesFallback,
+      flightAltitudeMeters,
+      flightLandmarkName,
+      isFree,
+    ]
   );
 
   useEffect(() => {
@@ -230,15 +301,24 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
     }
     if (!fetchedThisOpenRef.current) {
       fetchedThisOpenRef.current = true;
-      void fetchGuide(destination ? initialMode : 'nearby');
+      const startMode =
+        initialMode === 'flight'
+          ? 'flight'
+          : destination
+            ? initialMode
+            : 'nearby';
+      void fetchGuide(startMode);
     }
   }, [isOpen, destination, initialMode, fetchGuide]);
 
   const handleDriveToPlace = async (title: string) => {
-    if (!placesLib) return;
     setNavigatingTitle(title);
     try {
-      const resolved = await resolvePlaceByQuery(placesLib, title);
+      const resolved = isFree
+        ? await resolveFreePlaceByQuery(title, mapProvider)
+        : placesLib
+          ? await resolvePlaceByQuery(placesLib, title)
+          : null;
       if (resolved) {
         onSetNewDestination(resolved);
         onClose();
@@ -256,14 +336,22 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
 
   return (
     <aside
-      aria-label="Google 지도 AI 현지 가이드"
+      aria-label="실시간 현지 가이드"
       className="fixed inset-y-0 right-0 z-[60] w-full sm:w-[400px] bg-[#0F141E] border-l border-slate-800 shadow-2xl flex flex-col"
     >
       <div className="flex items-center justify-between px-4 py-3.5 border-b border-slate-800">
         <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+          {activeMode === 'flight' ? (
+            <Plane className="w-4 h-4 text-sky-400 shrink-0" />
+          ) : (
+            <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+          )}
           <h2 className="text-sm font-bold text-slate-100">
-            실시간 현지 가이드 (Google Maps)
+            {activeMode === 'flight'
+              ? '기내 상공 랜드마크 브리핑'
+              : isFree
+                ? '실시간 주변 가이드 (오픈소스 OSM)'
+                : '실시간 현지 가이드 (Google Maps)'}
           </h2>
         </div>
         <button
@@ -278,30 +366,42 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
 
       {/* Mode Tabs & Search */}
       <div className="p-4 border-b border-slate-800/80 space-y-3">
-        <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#161D29] rounded-xl">
+        <div className="grid grid-cols-3 gap-1.5 p-1 bg-[#161D29] rounded-xl">
           <button
             type="button"
             onClick={() => void fetchGuide('destination')}
             disabled={!destination || loading}
-            className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+            className={`min-h-[36px] px-2 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
               activeMode === 'destination'
                 ? 'bg-amber-500 text-slate-950'
                 : 'text-slate-300 hover:text-white'
             } disabled:opacity-40`}
           >
-            목적지 브리핑
+            목적지
           </button>
           <button
             type="button"
             onClick={() => void fetchGuide('nearby')}
             disabled={loading}
-            className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+            className={`min-h-[36px] px-2 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
               activeMode === 'nearby'
                 ? 'bg-emerald-500 text-slate-950'
                 : 'text-slate-300 hover:text-white'
             }`}
           >
-            현재 주변 명소
+            주변 명소
+          </button>
+          <button
+            type="button"
+            onClick={() => void fetchGuide('flight')}
+            disabled={loading}
+            className={`min-h-[36px] px-2 rounded-lg text-[11px] font-semibold transition-colors whitespace-nowrap ${
+              activeMode === 'flight'
+                ? 'bg-sky-500 text-slate-950'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            상공 브리핑
           </button>
         </div>
 
@@ -340,7 +440,13 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
         {loading && (
           <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-400">
             <div className="w-7 h-7 border-2 border-amber-400/30 border-t-amber-400 rounded-full animate-spin" />
-            <p className="text-xs">Google 지도 기반 최신 정보를 조회 중...</p>
+            <p className="text-xs">
+              {activeMode === 'flight'
+                ? '상공 랜드마크 브리핑을 생성 중...'
+                : isFree
+                  ? 'OpenStreetMap 주변 명소를 조회 중...'
+                  : 'Google 지도 기반 최신 정보를 조회 중...'}
+            </p>
           </div>
         )}
 
@@ -355,7 +461,7 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
             {guideData.summary && (
               <div className="space-y-2">
                 <h3 className="text-xs font-semibold text-slate-400">
-                  경로 주변 요약
+                  {activeMode === 'flight' ? '기내 안내 방송' : '경로 주변 요약'}
                 </h3>
                 <div className="text-sm text-slate-200 leading-relaxed whitespace-pre-line [word-break:keep-all]">
                   {guideData.summary}
@@ -366,7 +472,9 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
             {guideData.places.length > 0 && (
               <div className="space-y-2.5">
                 <h3 className="text-xs font-semibold text-slate-400">
-                  Google Maps 확인 장소 ({guideData.places.length})
+                  {isFree
+                    ? `OpenStreetMap 확인 장소 (${guideData.places.length})`
+                    : `Google Maps 확인 장소 (${guideData.places.length})`}
                 </h3>
                 <ul className="space-y-2.5">
                   {guideData.places.map((place, idx) => (
@@ -405,21 +513,23 @@ export const GroundGuideDrawer: React.FC<GroundGuideDrawerProps> = ({
                         </div>
                       )}
 
-                      <div className="pl-6 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => void handleDriveToPlace(place.title)}
-                          disabled={navigatingTitle === place.title}
-                          className="min-h-[34px] px-3 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-xs font-semibold text-amber-300 inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
-                        >
-                          <Navigation className="w-3 h-3" />
-                          <span>
-                            {navigatingTitle === place.title
-                              ? '경로 설정 중...'
-                              : '여기로 주행하기'}
-                          </span>
-                        </button>
-                      </div>
+                      {activeMode !== 'flight' && (
+                        <div className="pl-6 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => void handleDriveToPlace(place.title)}
+                            disabled={navigatingTitle === place.title}
+                            className="min-h-[34px] px-3 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-xs font-semibold text-amber-300 inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                          >
+                            <Navigation className="w-3 h-3" />
+                            <span>
+                              {navigatingTitle === place.title
+                                ? '경로 설정 중...'
+                                : '여기로 주행하기'}
+                            </span>
+                          </button>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>

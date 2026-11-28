@@ -1,4 +1,4 @@
-import type { ComputedRouteData } from '../types/drive';
+import { isFreeProvider, type ComputedRouteData, type MapProviderMode } from '../types/drive';
 import {
   extractRegionLabelFromAddress,
   extractRoadNamesFromSteps,
@@ -12,12 +12,13 @@ export interface ResolvedTripRegions {
 
 /**
  * Resolves visited regions and road corridors along the driven portion of a route
- * using real Google Maps Platform responses (Geocoding REST proxy + Places API New + route steps).
+ * using either Google Maps Platform responses or free OpenStreetMap Nominatim reverse geocoding.
  */
 export async function resolveVisitedRegionsForTrip(
   placesLib: google.maps.PlacesLibrary | null,
   routeData: ComputedRouteData,
-  drivenDistanceMeters: number
+  drivenDistanceMeters: number,
+  mapProvider: MapProviderMode = 'google'
 ): Promise<ResolvedTripRegions> {
   const orderedRegions: string[] = [];
   const seen = new Set<string>();
@@ -48,10 +49,13 @@ export async function resolveVisitedRegionsForTrip(
 
   if (checkpoints.length > 0) {
     try {
-      const resp = await fetch('/api/geocode/regions', {
+      const endpoint = isFreeProvider(mapProvider)
+        ? '/api/free/regions'
+        : '/api/geocode/regions';
+      const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ points: checkpoints }),
+        body: JSON.stringify({ points: checkpoints, provider: mapProvider }),
       });
       if (resp.ok) {
         const text = await resp.text();
@@ -66,7 +70,7 @@ export async function resolveVisitedRegionsForTrip(
         }
       }
     } catch {
-      // Non-fatal; proceed to Places API fallback
+      // Non-fatal; proceed to fallback
     }
   }
 

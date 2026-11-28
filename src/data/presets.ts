@@ -46,6 +46,15 @@ export const GLOBAL_ROUTE_PRESETS: GlobalRoutePreset[] = [
     destinationQuery: 'Louvre Museum, Paris',
     travelMode: 'DRIVING',
   },
+  {
+    id: 'busan-haeundae',
+    title: '광안리 → 해운대 마린시티',
+    subtitle: '부산 바다와 마린시티 스카이라인 코스',
+    regionTag: '부산 · 대한민국',
+    originQuery: '광안리해수욕장, 부산',
+    destinationQuery: '해운대해수욕장, 부산',
+    travelMode: 'DRIVING',
+  },
 ];
 
 export const CHALLENGE_COURSES: ChallengeCourse[] = [
@@ -108,6 +117,18 @@ export const CHALLENGE_COURSES: ChallengeCourse[] = [
     destinationQuery: '북악스카이웨이 팔각정, 서울',
     travelMode: 'DRIVING',
     targetScore: 1400,
+  },
+  {
+    id: 'seoul-bukchon-walk',
+    title: '광화문 → 북촌 한옥마을',
+    subtitle: '고궁 돌담길 도심 도보 거리뷰 산책',
+    regionTag: '서울 · 도심도보',
+    category: '도심야경',
+    difficulty: '보통',
+    originQuery: '광화문, 서울 종로구',
+    destinationQuery: '북촌한옥마을, 서울 종로구',
+    travelMode: 'WALKING',
+    targetScore: 1200,
   },
 ];
 
